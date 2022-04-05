@@ -28,6 +28,11 @@ contract NoLossLottery is AccessControlUpgradeable {
 
     /// EVENTS
 
+    event ETHReceived(
+        uint amount,
+        address sender
+    );
+
     /// MODIFIERS
 
     /// FUNCTIONS
@@ -67,5 +72,9 @@ contract NoLossLottery is AccessControlUpgradeable {
      */
     function isAdmin(address _address) public view returns (bool) {
         return(hasRole(ADMIN_ROLE, _address));
+    }
+
+    receive() payable external {
+        emit ETHReceived(msg.value, msg.sender);
     }
 }
