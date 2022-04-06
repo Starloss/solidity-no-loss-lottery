@@ -2,29 +2,42 @@
 pragma solidity >=0.8.0 <0.9.0;
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
-contract NoLossLottery is AccessControlUpgradeable {
-    using SafeERC20 for IERC20;
-
+contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
     /// CONSTANTS
+    address public constant compoundETHAddress = 0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5;
+    address public constant DAIAddress = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+    address public constant USDCAddress = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address public constant USDTAddress = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
     /// VARIABLES
     /**
      *  @notice uint's used for storage
      *  lotteryFee is the fee for every lottery interest earned
+     *  dateEndForNextLottery is the date which the actual lottery will ends
+     *  dateStartForNextLottery is the date which the nect lottery will start
+     *  ticketCost is the cost in WEI of the tickets
      */
     uint public lotteryFee;
+    uint public dateEndForNextLottery;
+    uint public dateStartForNextLottery;
+    uint public ticketCost;
+
+    mapping(address => uint) tickets;
+
+    /**
+     *  @notice Variable used for getting the feed price of ETH
+     */
+    AggregatorV3Interface internal ETHFeed;
 
     /**
      *  @notice Variable used for store the address for pay the fees
      */
     address public recipientAddress;
-
-    /**
-     *  @notice Bytes32 used for roles
-     */
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
     /// EVENTS
 
@@ -33,7 +46,45 @@ contract NoLossLottery is AccessControlUpgradeable {
         address sender
     );
 
+    event TicketsBuyedWithETH(
+        uint amount,
+        address buyer
+    );
+
+    event TicketsBuyedWithTokens(
+        uint amount,
+        address buyer
+    );
+    
+    event FundsInvested(
+        uint amount,
+        uint nextEndDate
+    );
+
     /// MODIFIERS
+
+    modifier tokenAllowed(address token) {
+        require(
+            token == DAIAddress || token == USDCAddress || token == USDTAddress,
+            "Token not allowed"
+        );
+        _;
+    }
+
+    modifier lotteryEnded() {
+        require(block.timestamp >= dateEndForNextLottery, "Lottery has not ended");
+        _;
+    }
+    
+    modifier lotteryReadyToStart() {
+        require(block.timestamp >= dateStartForNextLottery, "Lottery it's not ready to start");
+        _;
+    }
+
+    modifier ticketSaleOpen() {
+        require(block.timestamp >= dateEndForNextLottery && block.timestamp <= dateStartForNextLottery, "Ticket sales are closed until this lottery ends");
+        _;
+    }
 
     /// FUNCTIONS
     /**
@@ -41,17 +92,69 @@ contract NoLossLottery is AccessControlUpgradeable {
      */
     function initialize() public initializer {
         __AccessControl_init();
+        __Pausable_init();
+
         _setupRole(ADMIN_ROLE, msg.sender);
 
+        setETHFeed(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
         setRecipientAddress(msg.sender);
-        setlotteryFee(500);
+        setLotteryFee(500);
+        setTicketCost(10000 gwei);
+    }
+
+    function buyATicketWithEth(uint amount) payable public ticketSaleOpen {
+        require(msg.value >= amount * ticketCost);
+        
+        (bool success, ) = msg.sender.call{value: msg.value - (ticketCost * amount)}("");
+        require(success, "Failed trying to return surplus ETH");
+
+        tickets[msg.sender] += amount;
+
+        emit TicketsBuyedWithETH(amount, msg.sender);
+    }
+
+    function buyATicketWithToken(uint amount, address _token) public tokenAllowed(_token) ticketSaleOpen {
+        ERC20 token = ERC20(_token);
+
+        uint tokenCost = (ticketCost * uint(getETHPrice() * 10 ** 10)) / (10 ** 36) * (10 ** token.decimals());
+
+        require(
+            token.allowance(msg.sender, address(this)) >= amount * tokenCost,
+            "Not enough tokens to buy these amounts of tickets"
+        );
+
+        token.transferFrom(msg.sender, address(this), amount * tokenCost);
+
+        //swap
+
+        tickets[msg.sender] += amount;
+
+        emit TicketsBuyedWithTokens(amount, msg.sender);
+    }
+
+    function invest() public lotteryReadyToStart {
+        dateEndForNextLottery = block.timestamp + 5 days;
+        uint amount = address(this).balance; 
+
+        (bool success, ) = compoundETHAddress.call{value: amount}("mint");
+        require(success);
+
+        emit FundsInvested(amount, dateEndForNextLottery);
+    }
+
+    /**
+     *  @notice Set function that allows the admin to set the ETH feed address
+     *  @param _address is an address which will be the new ETH feed address
+     */
+    function setETHFeed(address _address) public onlyRole(ADMIN_ROLE) {
+        ETHFeed = AggregatorV3Interface(_address);
     }
 
     /**
      *  @notice Set function that allows the admin to set the lottery fee
      *  @param _lotteryFee is a uint which will be the new lottery fee
      */
-    function setlotteryFee(uint _lotteryFee) public onlyRole(ADMIN_ROLE) {
+    function setLotteryFee(uint _lotteryFee) public onlyRole(ADMIN_ROLE) {
         require(_lotteryFee >= 0 && _lotteryFee <= 1000, "Wrong fee!");
 
         lotteryFee = _lotteryFee;
@@ -64,6 +167,14 @@ contract NoLossLottery is AccessControlUpgradeable {
     function setRecipientAddress(address _recipientAddress) public onlyRole(ADMIN_ROLE) {
         recipientAddress = _recipientAddress;
     }
+    
+    /**
+     *  @notice Set function that allows the admin to set the ticket cost in ETH
+     *  @param _ticketCost is the amount of WEI to be setted as the cost
+     */
+    function setTicketCost(uint _ticketCost) public onlyRole(ADMIN_ROLE) {
+        ticketCost = _ticketCost;
+    }
 
     /**
      *  @notice Function that allow to know if an address has the ADMIN_ROLE role
@@ -72,6 +183,15 @@ contract NoLossLottery is AccessControlUpgradeable {
      */
     function isAdmin(address _address) public view returns (bool) {
         return(hasRole(ADMIN_ROLE, _address));
+    }
+
+    /**
+     *  @notice Function that gets the price of ETH in USD using Chainlink
+     *  @return an int with the price of ETH in USD with 10 decimals
+     */
+    function getETHPrice() internal view returns (int) {
+        ( , int price, , , ) = ETHFeed.latestRoundData();
+        return price;
     }
 
     receive() payable external {
