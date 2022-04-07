@@ -14,6 +14,13 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
     address public constant USDTAddress = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
+    /// STRUCTS
+
+    struct Player {
+        address uid;
+        uint tickets;
+    }
+
     /// VARIABLES
     /**
      *  @notice uint's used for storage
@@ -26,8 +33,12 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
     uint public dateEndForNextLottery;
     uint public dateStartForNextLottery;
     uint public ticketCost;
+    uint public amountInvested;
+    uint public totalOfTickets;
 
-    mapping(address => uint) tickets;
+    bool public winnerSelected;
+
+    Player[] players;
 
     /**
      *  @notice Variable used for getting the feed price of ETH
@@ -85,6 +96,11 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
         require(block.timestamp >= dateEndForNextLottery && block.timestamp <= dateStartForNextLottery, "Ticket sales are closed until this lottery ends");
         _;
     }
+    
+    modifier winnerNotSelected() {
+        require(!winnerSelected, "Winner is already selected");
+        _;
+    }
 
     /// FUNCTIONS
     /**
@@ -100,6 +116,9 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
         setRecipientAddress(msg.sender);
         setLotteryFee(500);
         setTicketCost(10000 gwei);
+
+        winnerSelected = false;
+        totalOfTickets = 0;
     }
 
     function buyATicketWithEth(uint amount) payable public ticketSaleOpen {
@@ -108,7 +127,13 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
         (bool success, ) = msg.sender.call{value: msg.value - (ticketCost * amount)}("");
         require(success, "Failed trying to return surplus ETH");
 
-        tickets[msg.sender] += amount;
+        if (isPlayer(msg.sender)) {
+            players[playerIndex(msg.sender)].tickets += amount;
+        } else {
+            players.push(
+                Player(msg.sender, amount)
+            );
+        }
 
         emit TicketsBuyedWithETH(amount, msg.sender);
     }
@@ -127,19 +152,63 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
 
         //swap
 
-        tickets[msg.sender] += amount;
+        if (isPlayer(msg.sender)) {
+            players[playerIndex(msg.sender)].tickets += amount;
+        } else {
+            players.push(
+                Player(msg.sender, amount)
+            );
+        }
 
         emit TicketsBuyedWithTokens(amount, msg.sender);
     }
 
     function invest() public lotteryReadyToStart {
         dateEndForNextLottery = block.timestamp + 5 days;
-        uint amount = address(this).balance; 
+        amountInvested = address(this).balance;
 
-        (bool success, ) = compoundETHAddress.call{value: amount}("mint");
+        (bool success, ) = compoundETHAddress.call{value: amountInvested}(abi.encodeWithSignature("mint()"));
         require(success);
 
-        emit FundsInvested(amount, dateEndForNextLottery);
+        winnerSelected = false;
+
+        emit FundsInvested(amountInvested, dateEndForNextLottery);
+    }
+
+    function getWinner() public lotteryEnded winnerNotSelected {
+        winnerSelected = true;
+        
+        (bool success, bytes memory returnData) = compoundETHAddress.call(abi.encodeWithSignature("balanceOf(address)", address(this)));
+        require(success, "Failed trying getting the balance in compound");
+
+        uint numberOfTokens = abi.decode(returnData, (uint));
+
+        (success, ) = compoundETHAddress.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
+        require(success, "Failed trying to redeem the Ether from compound");
+
+        uint interest = address(this).balance - amountInvested;
+
+        uint ticketWinner = 0; // Use chainling for get random number
+        uint winner;
+
+        for(uint i = 0; i < players.length; i++) {
+            if(players[i].tickets >= ticketWinner) {
+                winner = i;
+                break;
+            }
+
+            ticketWinner -= players[i].tickets;
+        }
+
+        uint interestPayedAsFee = (interest * lotteryFee) / 10000; // 10000 = 100.00 %
+
+        (success, ) = recipientAddress.call{value: interestPayedAsFee}("");
+        require(success, "Fee recolection failed");
+
+        uint ticketsAsReward = (interest - interestPayedAsFee) / ticketCost;
+
+        players[winner].tickets += ticketsAsReward;
+        totalOfTickets += ticketsAsReward;
     }
 
     /**
@@ -183,6 +252,36 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable {
      */
     function isAdmin(address _address) public view returns (bool) {
         return(hasRole(ADMIN_ROLE, _address));
+    }
+    
+    /**
+     *  @notice Function that allow to know if an address is a player
+     *  @param _address is the address for check
+     *  @return a boolean, true if the user is a player or false otherwise
+     */
+    function isPlayer(address _address) public view returns (bool) {
+        for(uint i = 0; i < players.length; i++) {
+            if (players[i].uid == _address) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    
+    /**
+     *  @notice Function that allow to know the index of the player
+     *  @param _address is the address for check
+     *  @return a uint, the index of the user
+     */
+    function playerIndex(address _address) public view returns (uint) {
+        for(uint i = 0; i < players.length; i++) {
+            if (players[i].uid == _address) {
+                return i;
+            }
+        }
+
+        revert("The user is not a player");
     }
 
     /**
