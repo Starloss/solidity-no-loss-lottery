@@ -9,6 +9,7 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "./VRFConsumerBaseV2Upgradeable.sol";
+import "./interfaces/CETH.sol";
 
 import "hardhat/console.sol";
 
@@ -184,6 +185,22 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
         require(!winnerSelected, "Winner is already selected");
         _;
     }
+    
+    /**
+     *  @notice Modifier function that prevents select the winner without a random number
+     */
+    modifier randomNumberRetrieved() {
+        require(s_randomWords[0] != 0, "There is no random number yet");
+        _;
+    }
+    
+    /**
+     *  @notice Modifier function that prevents select the winner without a random number
+     */
+    modifier randomNumberNoRequested() {
+        require(s_requestId == 0, "There is a random number requested already");
+        _;
+    }
 
     /// FUNCTIONS
     /**
@@ -218,6 +235,10 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
         createNewSubscription();
     }
 
+    fallback() external payable {
+        emit ETHReceived(msg.value, msg.sender);
+    }
+
     receive() payable external {
         emit ETHReceived(msg.value, msg.sender);
     }
@@ -226,7 +247,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
      *  @notice Function that allows the admin to request a random number from chainlink VRF V2
      *  @notice when this request get's fullfilled, the Coordinator will call fulfillRandomWords
      */
-    function requestRandomWords() external onlyRole(ADMIN_ROLE) lotteryEnded winnerNotSelected {
+    function requestRandomWords() external onlyRole(ADMIN_ROLE) lotteryEnded randomNumberNoRequested {
         s_requestId = COORDINATOR.requestRandomWords(
             keyHash,
             s_subscriptionId,
@@ -473,14 +494,13 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     ) internal override {
         s_randomWords = randomWords;
         console.log("1", s_randomWords[0]);
-        getWinner();
     }
     
     /**
      *  @notice Function that retrieves all the ETH invested and select a winner.
      *  @notice This function deposits all the prize as tickets
      */
-    function getWinner() internal {
+    function getWinner() public onlyRole(ADMIN_ROLE) randomNumberRetrieved {
         winnerSelected = true;
         
         (bool success, bytes memory returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("balanceOf(address)", address(this)));
@@ -490,10 +510,12 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
 
         console.log("2", numberOfTokens);
 
-        (success, returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
-        console.log("2.1", success);
-        console.log("2.2", abi.decode(returnData, (uint)));
-        require(success, "Failed trying to redeem the Ether from compound");
+        CETH cETH = CETH(COMPOUND_ETH_ADDRESS);
+        cETH.redeem(numberOfTokens);
+        // (success, returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
+        // console.log("2.1", success);
+        // console.log("2.2", abi.decode(returnData, (uint)));
+        // require(success, "Failed trying to redeem the Ether from compound");
 
         console.log("2.3", address(this).balance);
         console.log("2.4", amountInvested);
@@ -534,6 +556,8 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
         console.log("8", totalOfTickets);
 
         dateStartForNextLottery = block.timestamp + 2 days;
+        s_randomWords[0] = 0;
+        s_requestId = 0;
     }
 
     /**

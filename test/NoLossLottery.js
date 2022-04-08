@@ -100,6 +100,8 @@ describe("NoLossLottery", () => {
             
             await VRFCoordinatorV2Mock.fulfillRandomWords(requestId, NoLossLottery.address);
 
+            await NoLossLottery.getWinner();
+
             let [uid, tickets] = await NoLossLottery.getPlayer(0);
             [AliceUID, AliceTickets] = await NoLossLottery.getPlayer(1);
             [BobUID, BobTickets] = await NoLossLottery.getPlayer(2);
