@@ -64,17 +64,17 @@ describe("NoLossLottery", () => {
 
             const ticketCost = await NoLossLottery.TICKET_COST();
 
-            await NoLossLottery.connect(Alice).buyTicketsWithEth(10000, {value: parseEther("0.1")});
+            await NoLossLottery.connect(Alice).buyTicketsWithEth(100000, {value: parseEther("1")});
 
             let [AliceUID, AliceTickets] = await NoLossLottery.getPlayer(1);
             expect(AliceUID).to.be.equal(Alice.address);
-            expect(AliceTickets).to.be.equal(10000);
+            expect(AliceTickets).to.be.equal(100000);
 
-            await NoLossLottery.connect(Bob).buyTicketsWithEth(90000, {value: parseEther("0.9")});
+            await NoLossLottery.connect(Bob).buyTicketsWithEth(900000, {value: parseEther("9")});
 
             let [BobUID, BobTickets] = await NoLossLottery.getPlayer(2);
             expect(BobUID).to.be.equal(Bob.address);
-            expect(BobTickets).to.be.equal(90000);
+            expect(BobTickets).to.be.equal(900000);
 
             await network.provider.send("evm_increaseTime", [172800]);
             await network.provider.send("evm_mine");
@@ -93,12 +93,22 @@ describe("NoLossLottery", () => {
             .revertedWith("Ticket sales are closed until this lottery ends");
 
             await network.provider.send("evm_increaseTime", [432000]);
-            await network.provider.send("evm_mine");
+            await hre.network.provider.send("hardhat_mine", ["0x81CE"]);
 
             await NoLossLottery.requestRandomWords();
             let requestId = await NoLossLottery.s_requestId();
             
             await VRFCoordinatorV2Mock.fulfillRandomWords(requestId, NoLossLottery.address);
+            
+            console.log(await provider.getBalance(NoLossLottery.address));
+
+            const transactionHash = await owner.sendTransaction({
+                to: NoLossLottery.address,
+                value: ethers.utils.parseEther("1.0"), // Sends exactly 1.0 ether
+            });
+
+            console.log("Ether sended");
+            console.log(await provider.getBalance(NoLossLottery.address));
 
             await NoLossLottery.getWinner();
 

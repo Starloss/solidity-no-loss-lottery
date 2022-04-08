@@ -236,10 +236,12 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     }
 
     fallback() external payable {
+        console.log("fallback()");
         emit ETHReceived(msg.value, msg.sender);
     }
 
-    receive() payable external {
+    receive() external payable {
+        console.log("receive()");
         emit ETHReceived(msg.value, msg.sender);
     }
 
@@ -502,23 +504,18 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
      */
     function getWinner() public onlyRole(ADMIN_ROLE) randomNumberRetrieved {
         winnerSelected = true;
-        
-        (bool success, bytes memory returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("balanceOf(address)", address(this)));
-        require(success, "Failed trying getting the balance in compound");
 
-        uint numberOfTokens = abi.decode(returnData, (uint));
+        CETH cETH = CETH(COMPOUND_ETH_ADDRESS);
+        
+        uint numberOfTokens = cETH.balanceOfUnderlying(address(this));
 
         console.log("2", numberOfTokens);
 
-        CETH cETH = CETH(COMPOUND_ETH_ADDRESS);
-        cETH.redeem(numberOfTokens);
-        // (success, returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
-        // console.log("2.1", success);
-        // console.log("2.2", abi.decode(returnData, (uint)));
-        // require(success, "Failed trying to redeem the Ether from compound");
+        uint response = cETH.redeemUnderlying(numberOfTokens);
 
-        console.log("2.3", address(this).balance);
-        console.log("2.4", amountInvested);
+        console.log("2.1", response);
+        console.log("2.2", address(this).balance);
+        console.log("2.3", amountInvested);
 
         uint interest = address(this).balance - amountInvested;
 
