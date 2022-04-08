@@ -1,8 +1,10 @@
 const CONTRACT_NAME = "NoLossLottery";
 
 module.exports = async ({ getNamedAccounts, deployments }) => {
-  const { deploy } = deployments;
+  const { deploy, get } = deployments;
   const { deployer } = await getNamedAccounts();
+
+  const coordinator = await get("VRFCoordinatorV2Mock");
 
   // Upgradeable Proxy
   await deploy("NoLossLottery", {
@@ -11,8 +13,9 @@ module.exports = async ({ getNamedAccounts, deployments }) => {
       owner: deployer,
       execute: {
         init: {
-          methodName: "initialize"
-        }
+          methodName: "initialize",
+          args: [coordinator.address]
+        },
       },
     },
     log: true,
@@ -20,3 +23,4 @@ module.exports = async ({ getNamedAccounts, deployments }) => {
 };
 
 module.exports.tags = [CONTRACT_NAME];
+module.exports.dependencies = ['VRFCoordinatorV2Mock']

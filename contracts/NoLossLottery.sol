@@ -4,10 +4,13 @@ pragma solidity >=0.8.0 <0.9.0;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "./VRFConsumerBaseV2Upgradeable.sol";
+
+import "hardhat/console.sol";
 
 contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFConsumerBaseV2Upgradeable {
     /// CONSTANTS
@@ -18,7 +21,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     address public constant LINK_ADDRESS = 0x514910771AF9Ca656af840dff83E8264EcF986CA;
     address public constant USDC_ADDRESS = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address public constant USDT_ADDRESS = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
-    address public constant VRF_COORDINATOR = 0x271682DEB8C4E0901D1a1550aD2e64D568E69909;
+    address public constant UNISWAP_ROUTER_ADDRESS = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
@@ -27,7 +30,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
      *  @notice bytes32's used for storage
      *  keyHash is the maximum gas price in wei for every request
      */
-    bytes32 keyHash;
+    bytes32 public keyHash;
 
     /**
      *  @notice uint's used for storage
@@ -186,23 +189,23 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     /**
      *  @notice Constructor function that initialize the contract
      */
-    function initialize() public initializer {
-        __VRFConsumerBaseV2_init(VRF_COORDINATOR);
+    function initialize(address vrfCoordinator) public initializer {
+        __VRFConsumerBaseV2_init(vrfCoordinator);
         __AccessControl_init();
         __Pausable_init();
 
         _setupRole(ADMIN_ROLE, msg.sender);
 
         LINKTOKEN = LinkTokenInterface(LINK_ADDRESS);
-        COORDINATOR = VRFCoordinatorV2Interface(VRF_COORDINATOR);
-
-        setETHFeed(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
-        setRecipientAddress(msg.sender);
-        setLotteryFee(500);
+        COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
 
         players.push(
             Player(msg.sender, 0)
         );
+
+        setETHFeed(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
+        setRecipientAddress(msg.sender);
+        setLotteryFee(500);
 
         winnerSelected = false;
         totalOfTickets = 0;
@@ -234,7 +237,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     }
 
     /**
-     *  @notice Function that allows the admin to supply the subscription with LINK
+     *  @notice Function that allows  to supply the subscription with LINK
      *  @notice The subscription requires enough LINK for pay gas fee of retrieve random numbers
      *  @param amount is the amount of LINK for supply the subscription
      */
@@ -243,13 +246,22 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
     }
 
     /**
+     *  @notice Function that allow to know the index of the player
+     *  @param index is the uint to retrieve the information
+     *  @return (address, uint) with the address and tickets of the player
+     */
+    function getPlayer(uint index) external view returns (address, uint) {
+        return (players[index].uid, players[index].tickets);
+    }
+
+    /**
      *  @notice Function that allows buy tickets with ETH
      *  @notice if the user already have tickets, this increases the amount
      *  @notice if the user doesn't have any tickets, this create a new player with the amount
      *  @param amount is the amount of tickets for buy
      */
-    function buyATicketWithEth(uint amount) payable public ticketSaleOpen {
-        require(msg.value >= amount * TICKET_COST);
+    function buyTicketsWithEth(uint amount) payable public ticketSaleOpen {
+        require(msg.value >= amount * TICKET_COST, "Not enough amount");
         
         (bool success, ) = msg.sender.call{value: msg.value - (TICKET_COST * amount)}("");
         require(success, "Failed trying to return surplus ETH");
@@ -262,6 +274,8 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
             );
         }
 
+        totalOfTickets += amount;
+
         emit TicketsBuyedWithETH(amount, msg.sender);
     }
 
@@ -273,7 +287,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
      *  @param amount is the amount of tickets for buy
      *  @param _token is the address of the token used for buy the tickets
      */
-    function buyATicketWithToken(
+    function buyTicketsWithToken(
         uint amount,
         address _token
     )
@@ -292,7 +306,11 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
 
         token.transferFrom(msg.sender, address(this), amount * tokenCost);
 
-        //swap
+        address[] memory path = new address[](2);
+        path[0] = _token;
+        path[1] = IUniswapV2Router02(UNISWAP_ROUTER_ADDRESS).WETH();
+
+        IUniswapV2Router02(UNISWAP_ROUTER_ADDRESS).swapExactTokensForETH(amount, 0, path, msg.sender, block.timestamp);
 
         if (isPlayer(msg.sender)) {
             players[playerIndex(msg.sender)].tickets += amount;
@@ -301,6 +319,8 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
                 Player(msg.sender, amount)
             );
         }
+
+        totalOfTickets += amount;
 
         emit TicketsBuyedWithTokens(amount, msg.sender);
     }
@@ -382,13 +402,15 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
      *  @param _recipientAddress is the address which will be the new recipient address
      */
     function setRecipientAddress(address _recipientAddress) public onlyRole(ADMIN_ROLE) {
-        uint amount = players[0].tickets * TICKET_COST;
+        if(players[0].tickets > 0) {
+            uint amount = players[0].tickets * TICKET_COST;
+
+            (bool success, ) = recipientAddress.call{value: amount}("");
+            require(success, "Failed trying sending the eth");
+        }
 
         players[0].tickets = 0;
         players[0].uid = _recipientAddress;
-
-        (bool success, ) = recipientAddress.call{value: amount}("");
-        require(success, "Failed trying sending the eth");
         
         recipientAddress = _recipientAddress;
     }
@@ -450,6 +472,7 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
         uint256[] memory randomWords
     ) internal override {
         s_randomWords = randomWords;
+        console.log("1", s_randomWords[0]);
         getWinner();
     }
     
@@ -465,13 +488,24 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
 
         uint numberOfTokens = abi.decode(returnData, (uint));
 
-        (success, ) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
+        console.log("2", numberOfTokens);
+
+        (success, returnData) = COMPOUND_ETH_ADDRESS.call(abi.encodeWithSignature("redeem(uint256)", numberOfTokens));
+        console.log("2.1", success);
+        console.log("2.2", abi.decode(returnData, (uint)));
         require(success, "Failed trying to redeem the Ether from compound");
+
+        console.log("2.3", address(this).balance);
+        console.log("2.4", amountInvested);
 
         uint interest = address(this).balance - amountInvested;
 
+        console.log("3", interest);
+
         uint ticketWinner = s_randomWords[0] % totalOfTickets + 1;
         uint winner;
+
+        console.log("4", ticketWinner);
 
         for(uint i = 0; i < players.length; i++) {
             if(players[i].tickets >= ticketWinner) {
@@ -482,14 +516,22 @@ contract NoLossLottery is AccessControlUpgradeable, PausableUpgradeable, VRFCons
             ticketWinner -= players[i].tickets;
         }
 
+        console.log("5", winner);
+
         uint interestPayedAsFee = (interest * lotteryFee) / 10000; /// 10000 = 100.00 %
+
+        console.log("6", interestPayedAsFee);
 
         players[0].tickets += interestPayedAsFee / TICKET_COST;
 
         uint ticketsAsReward = (interest - interestPayedAsFee) / TICKET_COST;
 
+        console.log("7", ticketsAsReward);
+
         players[winner].tickets += ticketsAsReward;
         totalOfTickets += ticketsAsReward;
+
+        console.log("8", totalOfTickets);
 
         dateStartForNextLottery = block.timestamp + 2 days;
     }
